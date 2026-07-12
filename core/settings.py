@@ -1,5 +1,6 @@
 
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -21,6 +22,7 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',
     'channels',
     'django.contrib.admin',
     'django.contrib.auth',
@@ -30,7 +32,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'posts',
-    
+    "rest_framework_simplejwt.token_blacklist",
     'notifications',
 
 ]
@@ -120,31 +122,71 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 
 REST_FRAMEWORK = {
-    'DEFAULT_RENDERER_CLASSES': [
-        'rest_framework.renderers.JSONRenderer',
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
     ],
-    'DEFAULT_PARSER_CLASSES': [
-        'rest_framework.parsers.JSONParser',
+    "DEFAULT_PARSER_CLASSES": [
+        "rest_framework.parsers.JSONParser",
     ],
-    # "DEFAULT_AUTHENTICATION_CLASSES": [
-    #     "rest_framework.authentication.SessionAuthentication",
-    # ],
-    "DEFAULT_PERMISSION_CLASSES": [
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
+    "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
-    ],
-
+    ),
+    "DEFAULT_FILTER_BACKENDS": [
+        "django_filters.rest_framework.DjangoFilterBackend",
+    ]
 }
 ## Redis as channel layer and Celery broker
-REDIS_URL = 'redis://localhost:6379/0'   # or use environment variable
+# NOTE: localhost:6379 may be served by a local Redis service on the host.
+# In this project the app expects a Redis-compatible server on that port.
+# redis-py 8 sends HELLO on connect, which older Redis 5.x rejects.
+REDIS_HOST = "127.0.0.1"
+REDIS_PORT = 6379
 
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {
-            "hosts": [REDIS_URL],
-        },
-    },
-}
+REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/1"
+from core.redis import check_redis
+
+REDIS_AVAILABLE = check_redis()
+if REDIS_AVAILABLE:
+
+    CACHES = {
+
+        "default": {
+
+            "BACKEND": "django_redis.cache.RedisCache",
+
+            "LOCATION": REDIS_URL,
+
+            "OPTIONS": {
+
+                "CLIENT_CLASS": "django_redis.client.DefaultClient"
+
+            }
+
+        }
+
+    }
+
+else:
+
+    CACHES = {
+
+        "default": {
+
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache"
+
+        }
+
+    }
+SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+
+SESSION_CACHE_ALIAS = "default"
+
+from core.channel_layer import get_channel_layer_config
+
+CHANNEL_LAYERS = get_channel_layer_config()
 
 # Celery
 CELERY_BROKER_URL = REDIS_URL
@@ -152,3 +194,15 @@ CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
+
+from datetime import timedelta
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}

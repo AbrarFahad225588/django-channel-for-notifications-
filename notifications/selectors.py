@@ -1,19 +1,16 @@
-# selectors.py
-from django.db.models import Q
-from .models import Notification
+from notifications.models import Notification
 
-def get_notifications(user, filters=None, page=1, page_size=20):
-    qs = Notification.objects.for_recipient(user).select_related('actor')
-    # optional prefetch if target is commonly used
-    # qs = qs.prefetch_related('target')
+
+def get_notifications(user, filters=None):
+    queryset = Notification.objects.for_recipient(user)
+
     if filters:
-        if 'is_read' in filters:
-            qs = qs.filter(is_read=filters['is_read'])
-        if 'notification_type' in filters:
-            qs = qs.filter(notification_type=filters['notification_type'])
-    # Order: unread first, then newest
-    qs = qs.order_by('-is_read', '-created_at')
-    # Pagination (manual or DRF's paginator)
-    start = (page - 1) * page_size
-    end = start + page_size
-    return list(qs[start:end]), qs.count()
+        if filters.get("is_read") is not None:
+            is_read = filters["is_read"].lower() == "true"
+            queryset = queryset.filter(is_read=is_read)
+
+        if filters.get("type"):
+            queryset = queryset.filter(type=filters["type"])
+
+    return queryset
+

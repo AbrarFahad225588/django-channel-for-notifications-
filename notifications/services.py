@@ -1,6 +1,7 @@
 # services.py
 from celery import current_app
 from django.db import transaction
+from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from asgiref.sync import async_to_sync
 from .models import Notification
@@ -8,10 +9,57 @@ from .serializers import NotificationSerializer
 from .tasks import broadcast_notification_task
 from django.shortcuts import get_object_or_404
 
+
+def prepare_notification_data(
+    recipient,
+    actor=None,
+    notification_type='SYSTEM',
+    title='',
+    message='',
+    target=None,
+    metadata=None,
+    icon='',
+    image='',
+    action_url='',
+    **kwargs
+):
+    data = {
+        'recipient_id': recipient.id if recipient else None,
+        'actor_id': actor.id if actor else None,
+        'notification_type': notification_type,
+        'title': title,
+        'message': message,
+        'metadata': metadata or {},
+        'icon': icon,
+        'image': image,
+        'action_url': action_url,
+        'target_content_type': None,
+        'target_object_id': None,
+    }
+
+    if target:
+        data['target_content_type'] = ContentType.objects.get_for_model(target)
+        data['target_object_id'] = target.pk
+
+    return data
+
 try:
     from channels.layers import get_channel_layer
 except ImportError:
     get_channel_layer = None
+
+
+def _should_use_synchronous_broadcast():
+    try:
+        channel_layer = get_channel_layer()
+    except Exception:
+        return True
+
+    if not channel_layer:
+        return True
+
+    return channel_layer.__class__.__name__ == 'InMemoryChannelLayer'
+
 
 def send_notification(
     recipient,
@@ -34,36 +82,44 @@ def send_notification(
     All arguments are self‑explanatory. `target` can be any Django model instance.
     If `celery_async=True`, the database creation and WebSocket broadcast happen in a Celery task.
     """
-    # Build data
-    data = {
-        'recipient': recipient,
-        'actor': actor,
-        'notification_type': notification_type,
-        'title': title,
-        'message': message,
-        'metadata': metadata or {},
-        'icon': icon,
-        'image': image,
-        'action_url': action_url,
-        'target_content_type': None,
-        'target_object_id': None,
-    }
-    
-    if target:
-        data['target_content_type'] = ContentType.objects.get_for_model(target)
-        data['target_object_id'] = target.pk
-    
-    if celery_async:
-        # Fire async task
-        broadcast_notification_task.delay(data, send_websocket=send_websocket)
-        return None
+    data = prepare_notification_data(
+        recipient=recipient,
+        actor=actor,
+        notification_type=notification_type,
+        title=title,
+        message=message,
+        target=target,
+        metadata=metadata,
+        icon=icon,
+        image=image,
+        action_url=action_url,
+        **kwargs
+    )
+
+    if celery_async and not _should_use_synchronous_broadcast():
+        try:
+            broadcast_notification_task.delay(data, send_websocket=send_websocket)
+            return None
+        except Exception:
+            return _create_and_broadcast(data, send_websocket=send_websocket)
     else:
-        # Synchronous creation and broadcast (for testing or immediate response)
         return _create_and_broadcast(data, send_websocket=send_websocket)
 
 @transaction.atomic
 def _create_and_broadcast(data, send_websocket=True):
-    notification = Notification.objects.create(**data)
+    payload = dict(data)
+    recipient_id = payload.pop('recipient_id', None)
+    actor_id = payload.pop('actor_id', None)
+
+    if recipient_id and 'recipient' not in payload:
+        payload['recipient'] = get_user_model().objects.filter(id=recipient_id).first()
+    if actor_id and 'actor' not in payload:
+        payload['actor'] = get_user_model().objects.filter(id=actor_id).first()
+
+    if not payload.get('recipient'):
+        return None
+
+    notification = Notification.objects.create(**payload)
     if send_websocket:
         _broadcast_to_user(notification)
     return notification
@@ -72,19 +128,28 @@ def _broadcast_to_user(notification):
     if not get_channel_layer:
         return
 
-    channel_layer = get_channel_layer()
+    try:
+        channel_layer = get_channel_layer()
+    except Exception:
+        return
+
     if not channel_layer:
         return
 
-    group_name = f'notifications_{notification.recipient_id}'
-    payload = NotificationSerializer(notification).data
-    async_to_sync(channel_layer.group_send)(
-        group_name,
-        {
-            'type': 'notification.message',
-            'payload': payload,
-        }
-    )
+    try:
+        group_name = f'notifications_{notification.recipient_id}'
+        payload = NotificationSerializer(notification).data
+        print("service  group:", group_name)
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                'type': 'notification_message',
+                'payload': payload,
+            }
+        )
+
+    except Exception:
+        return
 
 def send_bulk_notification(
     recipients,  # list of user instances or IDs

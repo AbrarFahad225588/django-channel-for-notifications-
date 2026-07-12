@@ -9,9 +9,17 @@ django.setup()
 from django.core.asgi import get_asgi_application
 from notifications.routing import websocket_urlpatterns
 
+from channels.routing import ProtocolTypeRouter, URLRouter
+
+from notifications.jwt_middleware import JWTAuthMiddleware
+
 application = ProtocolTypeRouter({
+
     "http": get_asgi_application(),
-    "websocket": AuthMiddlewareStack(
-        URLRouter(websocket_urlpatterns)
-    ),
+
+    "websocket":
+        JWTAuthMiddleware(
+            URLRouter(websocket_urlpatterns)
+        ),
+
 })

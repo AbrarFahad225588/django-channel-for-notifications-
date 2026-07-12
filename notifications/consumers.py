@@ -7,29 +7,44 @@ from .serializers import NotificationSerializer
 
 class NotificationConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        self.user = self.scope['user']
-        if self.user.is_anonymous:
+        self.user = self.scope.get('user')
+
+        if not self.user or getattr(self.user, 'is_anonymous', True):
             await self.close()
-        else:
-            self.group_name = f'notifications_{self.user.id}'
+            return
+
+        self.group_name = f'notifications_{self.user.id}'
+        try:
             await self.channel_layer.group_add(
                 self.group_name,
                 self.channel_name
             )
-            await self.accept()
-    
+            print("Consumer group:", self.group_name)
+        except Exception:
+            await self.close()
+            return
+
+        await self.accept()
+        await self.send(text_data=json.dumps({
+            "message": "Connected!"
+        }))
+
     async def disconnect(self, close_code):
         if hasattr(self, 'group_name'):
-            await self.channel_layer.group_discard(
-                self.group_name,
-                self.channel_name
-            )
-    
+            try:
+                await self.channel_layer.group_discard(
+                    self.group_name,
+                    self.channel_name
+                )
+            except Exception:
+                pass
+
     async def receive(self, text_data):
-        # Could implement actions like mark as read via WebSocket
-        pass
-    
+        await self.send(text_data=json.dumps({
+            "message": text_data
+        }))
+
     async def notification_message(self, event):
         """Handler for messages sent to the group."""
-        payload = event['payload']
+        payload = event.get('payload', {})
         await self.send(text_data=json.dumps(payload))
